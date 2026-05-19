@@ -3,7 +3,7 @@ library(iSEE)
 library(readxl)
 library(S4Vectors)
 
-dde <- readRDS("dde_marina.rds")
+dde <- readRDS("dde.rds")
 
 rd <- as.data.frame(rowData(dde))
 
