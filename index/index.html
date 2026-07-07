@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>VHIO's Visual Omics</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #e1e3e5;
+      color: #2c3e50;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+
+    header {
+      background: #3d87bb;
+      width: 100%;
+      text-align: center;
+      padding: 18px;
+      position: absolute;
+      top: 0;
+    }
+
+    header h1 {
+      font-size: 32px;
+      font-weight: 600;
+      color: #ffffff;
+      letter-spacing: 1px;
+    }
+
+    .subtitle {
+      font-size: 18px;
+      color: #528ba6;
+      margin-bottom: 40px;
+    }
+
+    .cards {
+      display: flex;
+      gap: 20px;
+    }
+
+    .card {
+      background: #ffffff;
+      border: 1px solid #d0dde8;
+      border-left: 5px solid #2d79a7;
+      border-radius: 6px;
+      padding: 32px 28px;
+      width: 260px;
+      text-decoration: none;
+      color: inherit;
+      transition: border-color 0.2s, transform 0.2s, box-shadow 0.2s;
+    }
+
+    .card:hover {
+      border-left-color: #2d79a7;
+      transform: translateY(-6px);
+      box-shadow: 0 6px 20px rgba(91, 159, 206, 0.15);
+    }
+
+    .card-title {
+      font-size: 17px;
+      font-weight: 600;
+      color: #1e2b38;
+      margin-bottom: 10px;
+    }
+
+    .card-desc {
+      font-size: 13px;
+      color: #7a93a8;
+      line-height: 1.6;
+    }
+
+    .card-arrow {
+      margin-top: 20px;
+      font-size: 13px;
+      color: #5b9fce;
+    }
+
+    footer {
+      position: absolute;
+      bottom: 20px;
+      font-size: 14px;
+      color: #45627a;
+    }
+  </style>
+</head>
+<body>
+
+  <header>
+    <h1>VHIO's VISUAL OMICS</h1>
+  </header>
+
+  <p class="subtitle">Select an application to continue</p>
+
+  <div class="cards">
+
+    <a href="http://localhost:8180" class="card">
+      <div class="card-title">Bulk RNA-seq</div>
+      <div class="card-desc">
+        Explore gene expression data, differential expression analysis and functional enrichment results.
+      </div>
+      <div class="card-arrow">Open app →</div>
+    </a>
+
+    <a href="http://localhost:8181" class="card">
+      <div class="card-title">Genomics & Mutations</div>
+      <div class="card-desc">
+        Visualize somatic mutations, oncoprints, karyotype and circos plots.
+      </div>
+      <div class="card-arrow">Open app →</div>
+    </a>
+
+  </div>
+
+  <footer>Bioinformatics Unit · VHIO</footer>
+
+</body>
+</html>
