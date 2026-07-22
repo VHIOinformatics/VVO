@@ -48,7 +48,6 @@ ui <- dashboardPage(
       id = "tabs",
       menuItem("Basic Exploration", tabName = "basic_tab", icon = icon("eye")),
       menuItem("DEA and FEA results", tabName = "df_tab", icon = icon("chart-line")),
-      menuItem("Genomic Exploration",  tabName = "g_tab",    icon = icon("dna")),
       menuItem("Help", tabName = "help_tab", icon = icon("question-circle"))
     ),
     tags$hr(style = "border-top: 2px solid white; margin-top:4px; margin-bottom:4px;"),
@@ -64,14 +63,8 @@ ui <- dashboardPage(
     uiOutput("gens"),
     uiOutput("padj"),
     uiOutput("logFC"),
-    uiOutput("chr_selector"),
+    uiOutput("chr_selector")
     
-    # busca el data value que es diu g_tab i l'amaga per defecte
-    tags$script("
-    $(document).ready(function() {
-      $('a[data-value=\"g_tab\"]').hide();
-    });
-  ")
   ),
   
   dashboardBody(
@@ -90,7 +83,6 @@ ui <- dashboardPage(
     tabItems(
       tabItem(tabName = "basic_tab", uiOutput("isee_ui")),
       tabItem(tabName = "df_tab", uiOutput("isee_ui2")),
-      tabItem(tabName = "g_tab",    uiOutput("isee_ui3")),
       tabItem(tabName = "help_tab",    
               HTML('
           <h3 style="color:#2c3e50;">User Guide</h3>
@@ -242,16 +234,6 @@ server <- function(input, output, session) {
     })
   })
   
-  # Escolta canvis a dde2() i te_rowRanges() i actua en conseqüència
-  observe({
-    if (is.null(dde2())) {
-      shinyjs::hide(selector = "a[data-value='g_tab']")
-    } else if (te_rowRanges()) {
-      shinyjs::show(selector = "a[data-value='g_tab']")
-    } else {
-      shinyjs::hide(selector = "a[data-value='g_tab']")
-    }
-  })
   
   #2. OUTPUTS DE LA UI________________________________________________________________________________________________
   
@@ -351,7 +333,7 @@ server <- function(input, output, session) {
   })
   
   output$chr_selector <- renderUI({
-    req(dde2(), input$tabs == "g_tab")
+    req(dde2(), input$tabs == "df_tab", te_rowRanges())
     
     cromosomes <- paste0("chr", c(1:22, "X", "Y"))
     
@@ -496,11 +478,11 @@ server <- function(input, output, session) {
     label_colors <- color_palette[sample.totals.df$cluster]
     
     remove_grid <- ncol(dde) > 50
-    #elements a la llegenda:
+    # elements a la llegenda:
     num_grups <- length(unique(sample.totals.df$cluster))
     m_sel <- length(input$mostres)
     
-    #mida_text <- if(num_grups > 40) 4 else if(num_grups > 20) 7 else 9
+    # mida_text <- if(num_grups > 40) 4 else if(num_grups > 20) 7 else 9
     mida_quadrat <- if(num_grups > 40) 2.5 else 3 #if(num_grups > 10) 3 else 5
     mida_titol <- if(num_grups > 20) 8 else 10
     mida_text <- if(num_grups > 40) 5 else if(num_grups > 20) 7 else 9
@@ -918,6 +900,275 @@ server <- function(input, output, session) {
   
   #6. DEA/FEA TAB + Panells________________________________________________________________________________
   
+  # ---------- Karyoplot -----------
+  
+  # Renderitza el panel 
+  setMethod(".renderOutput", "KaryoPlot",
+            function(x, se, ..., output, pObjects, rObjects) {
+              
+              # Nom codificat d'aquest panel
+              panel_name <- .getEncodedName(x)
+              # Nom del panel font de la selecció
+              panel_src  <- x@RowSelectionSource
+              is_zoom    <- x@ZoomChr
+              
+              output[[panel_name]] <- renderPlot({
+                
+                # Sense això el plot no es torna a dibuixar quan canvia la selecció
+                force(rObjects[[paste0(panel_src, "_INTERNAL_single_select")]])
+                
+                #  reactivitat als inputs del sidebar
+                input$contrast
+                input$padj
+                input$logFC
+                
+                par(mar = c(1, 1, 2, 1))   # redueix marges del plot
+                
+                # Llegim el gen seleccionat des de la memòria del panel font
+                # mem@Selected conté el nom de la fila (gen) que s'ha clicat
+                sel_rows <- character(0)
+                mem <- pObjects$memory[[panel_src]]
+                if (!is.null(mem@Selected) && nchar(mem@Selected) > 0) {
+                  sel_rows <- mem@Selected
+                }
+                
+                # Construïm un GRanges net sense objectes S4
+                # karyoploteR només necessita seqnames, start i end
+                gr_raw <- SummarizedExperiment::rowRanges(se)
+                gr <- GenomicRanges::GRanges(
+                  seqnames = as.character(GenomeInfoDb::seqnames(gr_raw)),
+                  ranges   = IRanges::IRanges(
+                    start = as.integer(BiocGenerics::start(gr_raw)),
+                    end   = as.integer(BiocGenerics::end(gr_raw))
+                  )
+                )
+                # Assignem noms dels gens per poder indexar per nom
+                names(gr) <- rownames(se)
+                
+                # Definim aquí les variables que necessita el plot (accés a input des del servidor)
+                contrasts_sel   <- input$contrast
+                n_con           <- length(contrasts_sel)
+                pval_cut        <- if (!is.null(input$padj))  input$padj  else 0.05
+                lfc_cut         <- if (!is.null(input$logFC)) input$logFC else 1.0
+                rd              <- as.data.frame(SummarizedExperiment::rowData(se))
+                contrast_colors <- c("#00AFBB", "#7E4E90", "#E7B800", "#FC4E07")
+                
+                # Dibuixem el cariotip base (global o zoom segons el panel)
+                if (is_zoom) {
+                  chr_sel <- chr_sel_reactive()
+                  pp <- karyoploteR::getDefaultPlotParams(plot.type = 1)
+                  pp$topmargin      <- 0
+                  pp$bottommargin   <- 150
+                  pp$ideogramheight <- 25
+                  pp$leftmargin     <- 0.15
+                  kp <- karyoploteR::plotKaryotype(
+                    genome = "hg38", chromosomes = chr_sel,
+                    plot.type = 1, plot.params = pp
+                  )
+                } else {
+                  kp <- karyoploteR::plotKaryotype(genome = "hg38", plot.type = 1)
+                }
+                
+                # Dividim l'eix Y en bandes iguals: 1 per grisos + 1 per cada contrast
+                # Gris molt prim, contrastos ocupen la resta de l'eix Y
+                grey_h <- 0.05  # altura fixa petita per al gris
+                band_h <- if (n_con > 0) (1 - grey_h) / n_con else (1 - grey_h)
+                
+                # Banda 0: gris prim al fons
+                karyoploteR::kpRect(kp, data = gr,
+                                    y0     = 0,
+                                    y1     = grey_h,
+                                    col    = "#aaaaaa22",
+                                    border = "#aaaaaa88",
+                                    lwd    = 0.3)   # molt fi
+                
+                # Bandes de contrastos: comencen on acaba el gris
+                if (n_con > 0) {
+                  legend_labels <- c(); legend_cols <- c()
+                  for (i in seq_along(contrasts_sel)) {
+                    con    <- contrasts_sel[[i]]
+                    col_p  <- paste0(con, "_padj")
+                    col_fc <- paste0(con, "_log2FoldChange")
+                    if (!col_p %in% colnames(rd) || !col_fc %in% colnames(rd)) next
+                    sig    <- rownames(rd)[!is.na(rd[[col_p]]) & rd[[col_p]] < pval_cut & abs(rd[[col_fc]]) >= lfc_cut]
+                    gr_sig <- gr[intersect(sig, names(gr))]
+                    col_i  <- contrast_colors[((i - 1) %% length(contrast_colors)) + 1]
+                    
+                    y0_i <- grey_h + (i - 1) * band_h
+                    y1_i <- grey_h + i * band_h
+                    
+                    if (length(gr_sig) > 0) {
+                      karyoploteR::kpRect(kp, data = gr_sig,
+                                          y0     = y0_i,
+                                          y1     = y1_i,
+                                          col    = paste0(col_i, "44"),
+                                          border = col_i,
+                                          lwd    = 1)
+                    }
+                    legend_labels <- c(legend_labels, paste0(con, "  (n=", length(sig), ")"))
+                    legend_cols   <- c(legend_cols, col_i)
+                  }
+                  legend("bottomright",
+                         legend = legend_labels, fill = legend_cols,
+                         title  = paste0("DEGs  padj<", pval_cut, "  |logFC|>", lfc_cut),
+                         bty    = "n", cex = 0.75, xpd = NA)
+                }
+                
+                # Gen seleccionat a la taula → vermell per sobre de tot (igual que abans)
+                if (length(sel_rows) > 0 && sel_rows %in% names(gr)) {
+                  karyoploteR::kpRect(kp, data = gr[sel_rows],
+                                      y0 = 0, y1 = 0.95,
+                                      col = "red", border = "red", lwd = 3)
+                }
+              })
+            })
+  
+  # --------- CircosPlot -------------
+  
+  setMethod(".renderOutput", "CircosPlot",
+            function(x, se, ..., output, pObjects, rObjects) {
+              
+              panel_name <- .getEncodedName(x)
+              
+              output[[panel_name]] <- renderPlot({
+                
+                # Forcem reactivitat quan s'actualitza el panel
+                force(rObjects[[paste0(panel_name, "_INTERNAL_output_update")]])
+                
+                # Llegim els contrastos dels slots (inicialitzats des de input$contrast a app.R)
+                c1 <- pObjects$memory[[panel_name]]@Contrast1
+                c2 <- pObjects$memory[[panel_name]]@Contrast2
+                contrasts_sel <- unique(c(c1, c2))  # deduplicar si només hi ha un contrast seleccionat
+                
+                # Llegim els thresholds del sidebar 
+                input$padj
+                input$logFC
+                pval_cut <- if (!is.null(input$padj))  input$padj  else 0.05
+                lfc_cut  <- if (!is.null(input$logFC)) input$logFC else 1.0
+                
+                # Extraiem posicions genòmiques i dades de rowData
+                gr       <- rowRanges(se)
+                rd       <- as.data.frame(rowData(se))
+                gr_chr   <- as.character(seqnames(gr))
+                gr_start <- start(gr)
+                gr_end   <- end(gr)
+                gene_nms <- rownames(se)
+                
+                # Filtrem a cromosomes estàndards (descarta scaffolds i patches)
+                std_chrs   <- paste0("chr", c(1:22, "X", "Y"))
+                valid_mask <- gr_chr %in% std_chrs
+                validate(need(sum(valid_mask) > 0, "No valid chromosomal data"))
+                
+                # Paleta de colors: dos colors per contrast (up i down)
+                up_colors   <- c("#e74c3c", "#f39c12", "#9b59b6", "#1abc9c")
+                down_colors <- c("#3498db", "#2ecc71", "#e91e63", "#ff9800")
+                
+                # Filtrem DEGs per cada contrast separant up i down
+                sig_list <- list()
+                for (i in seq_along(contrasts_sel)) {
+                  con    <- contrasts_sel[[i]]
+                  col_p  <- paste0(con, "_padj")
+                  col_fc <- paste0(con, "_log2FoldChange")
+                  # Saltem si les columnes no existeixen a rowData
+                  if (!col_p %in% colnames(rd) || !col_fc %in% colnames(rd)) next
+                  is_sig <- !is.na(rd[[col_p]]) & rd[[col_p]] < pval_cut & abs(rd[[col_fc]]) >= lfc_cut
+                  sig_list[[con]] <- list(
+                    up     = rownames(rd)[is_sig & rd[[col_fc]] >  0],  # logFC positiu = upregulated
+                    down   = rownames(rd)[is_sig & rd[[col_fc]] <= 0],  # logFC negatiu = downregulated
+                    fc_col = col_fc
+                  )
+                }
+                validate(need(
+                  any(sapply(sig_list, function(s) length(s$up) + length(s$down)) > 0),
+                  "No significant genes found"
+                ))
+                
+                # Inicialitzem el plot circos
+                circlize::circos.clear()
+                circlize::circos.par(start.degree = 90, gap.degree = 2)  # chr1 comença a dalt
+                circlize::circos.initializeWithIdeogram(species = "hg38", plotType = c("ideogram", "labels"))
+                
+                # Vectors per construir la llegenda al final
+                legend_labels <- c()
+                legend_cols   <- c()
+                
+                # Un track circos per cada contrast
+                for (i in seq_along(contrasts_sel)) {
+                  con <- contrasts_sel[[i]]
+                  if (!con %in% names(sig_list)) next
+                  
+                  sig_up   <- sig_list[[con]]$up
+                  sig_down <- sig_list[[con]]$down
+                  col_fc   <- sig_list[[con]]$fc_col
+                  all_sig  <- c(sig_up, sig_down)
+                  if (length(all_sig) == 0) next
+                  
+                  # Colors d'aquest contrast (ciclant si hi ha més contrastos que colors)
+                  up_col   <- up_colors[((i - 1) %% length(up_colors)) + 1]
+                  down_col <- down_colors[((i - 1) %% length(down_colors)) + 1]
+                  
+                  # Construïm el BED dels DEGs d'aquest contrast amb el logFC com a valor Y
+                  sig_mask <- gene_nms %in% all_sig & valid_mask
+                  bed_con <- data.frame(
+                    chr   = gr_chr[sig_mask],
+                    start = gr_start[sig_mask],
+                    end   = gr_end[sig_mask],
+                    logfc = as.numeric(rd[[col_fc]][sig_mask])
+                  )
+                  # Eliminem files amb NA o cromosomes no estàndards
+                  bed_con <- bed_con[bed_con$chr %in% std_chrs & !is.na(bed_con$logfc), ]
+                  if (nrow(bed_con) == 0) next
+                  
+                  # Rang de l'eix Y: cobreix el logFC real + marge per veure el threshold
+                  lfc_range <- range(bed_con$logfc, na.rm = TRUE)
+                  lfc_ylim  <- c(min(lfc_range[1], -(lfc_cut + 0.5)), max(lfc_range[2], lfc_cut + 0.5))
+                  
+                  # Capturem colors en variables locals per al closure de panel.fun
+                  # (evita que el loop sobreescrigui el valor capturat)
+                  .up_col   <- up_col
+                  .down_col <- down_col
+                  
+                  circlize::circos.genomicTrackPlotRegion(
+                    bed_con,
+                    ylim         = lfc_ylim,
+                    track.height = 0.25,
+                    bg.border    = "grey80",
+                    bg.col       = "grey97",
+                    panel.fun = function(region, value, ...) {
+                      lfc_vals <- as.numeric(value[[1]])
+                      # Color per punt: up si logFC > 0, down si logFC <= 0
+                      col_vec  <- ifelse(lfc_vals > 0, .up_col, .down_col)
+                      circlize::circos.genomicPoints(region, value, col = col_vec, pch = 16, cex = 0.5)
+                      # Línia de referència a logFC = 0
+                      circlize::circos.lines(CELL_META$cell.xlim, c(0, 0), col = "grey50", lty = 2, lwd = 0.5)
+                    }
+                  )
+                  
+                  # Afegim entrada a la llegenda per up i down d'aquest contrast
+                  legend_labels <- c(legend_labels,
+                                     paste0(con, " up (n=",   length(sig_up),   ")"),
+                                     paste0(con, " down (n=", length(sig_down), ")"))
+                  legend_cols <- c(legend_cols, up_col, down_col)
+                }
+                
+                # Títol i llegenda final
+                title(paste("Circos:", paste(contrasts_sel, collapse = " vs ")), cex.main = 1.2, line = -2)
+                legend("bottomleft",
+                       legend = legend_labels,
+                       col    = legend_cols,
+                       pch    = 16,
+                       pt.cex = 1.5,
+                       bty    = "n",
+                       title  = paste0("padj<", pval_cut, "  |logFC|>", lfc_cut),
+                       cex    = 0.9)
+              })
+            })
+  
+  # amagar data parameters del circosPlot
+  setMethod(".hideInterface", "CircosPlot", function(x, field) {
+    if (field %in% c("SelectionBoxOpen", "DataBoxOpen")) TRUE else callNextMethod()
+  })
+  
   output$isee_ui2 <- renderUI({
     req(dde2(), input$contrast, input$tabs)
     
@@ -925,6 +1176,20 @@ server <- function(input, output, session) {
     #definim rownames (amb el as(, se), es perden)
     noms_gens <- rownames(dde2())
     rownames(dde3) <- noms_gens
+    
+    # conversió a rowRanges
+    has_row_ranges <- te_rowRanges()
+    if (has_row_ranges) {
+      rr <- rowRanges(dde2())[rownames(dde3), ]
+      dde3_rse <- SummarizedExperiment(
+        assays    = assays(dde3),
+        rowRanges = rr,
+        colData   = colData(dde3)
+      )
+      mcols(rowRanges(dde3_rse)) <- rowData(dde3)
+      rownames(dde3_rse) <- rownames(dde3)
+      dde3 <- dde3_rse
+    }
     
     #per la rowDataTable
     rd <- as.data.frame(rowData(dde2()))
@@ -1314,6 +1579,24 @@ server <- function(input, output, session) {
         initial_panels2[["FEADotPlot"]] <- obj_fea 
       }
       
+      if (has_row_ranges) {
+        chr_sel <- chr_sel_reactive()
+        
+        
+        initial_panels2[["KaryoPlot"]] <- new("KaryoPlot",
+                                              PanelHeight = 400L, PanelWidth = 6L,
+                                              RowSelectionSource = "RowDataTable1", ZoomChr = FALSE)
+        
+        initial_panels2[["KaryoPlot2"]] <- new("KaryoPlot",
+                                               PanelHeight = 400L, PanelWidth = 6L,
+                                               RowSelectionSource = "RowDataTable1", ZoomChr = TRUE)
+        
+        initial_panels2[["CircosPlot1"]] <- new("CircosPlot",
+                                                PanelHeight = 400L, PanelWidth = 6L,
+                                                RowSelectionSource = "RowDataTable1",
+                                                Contrast1 = input$contrast[1],
+                                                Contrast2 = if (length(input$contrast) >= 2) input$contrast[2] else input$contrast[1])
+      }
       
       ecm <- ExperimentColorMap(
         all_discrete = list(
@@ -1336,142 +1619,6 @@ server <- function(input, output, session) {
     }) # tanca isolate
     
   }) # tanca renderUI
-  
-  # 7. TAB GENOMIC EXPLORATION + PANELLS______________________________________________________________________
-  
-  # ---------- Karyoplot -----------
-  
-  # Renderitza el panel 
-  setMethod(".renderOutput", "KaryoPlot",
-            function(x, se, ..., output, pObjects, rObjects) {
-              
-              # Nom codificat d'aquest panel
-              panel_name <- .getEncodedName(x)
-              # Nom del panel font de la selecció
-              panel_src  <- x@RowSelectionSource
-              is_zoom    <- x@ZoomChr
-              
-              output[[panel_name]] <- renderPlot({
-                
-                # Sense això el plot no es torna a dibuixar quan canvia la selecció
-                force(rObjects[[paste0(panel_src, "_INTERNAL_single_select")]])
-                
-                par(mar = c(1, 1, 2, 1))   # redueix marges del plot
-                
-                # Llegim el gen seleccionat des de la memòria del panel font
-                # mem@Selected conté el nom de la fila (gen) que s'ha clicat
-                sel_rows <- character(0)
-                mem <- pObjects$memory[[panel_src]]
-                if (!is.null(mem@Selected) && nchar(mem@Selected) > 0) {
-                  sel_rows <- mem@Selected
-                }
-                
-                # Construïm un GRanges net sense objectes S4
-                # karyoploteR només necessita seqnames, start i end
-                gr_raw <- SummarizedExperiment::rowRanges(se)
-                gr <- GenomicRanges::GRanges(
-                  seqnames = as.character(GenomeInfoDb::seqnames(gr_raw)),
-                  ranges   = IRanges::IRanges(
-                    start = as.integer(BiocGenerics::start(gr_raw)),
-                    end   = as.integer(BiocGenerics::end(gr_raw))
-                  )
-                )
-                # Assignem noms dels gens per poder indexar per nom
-                names(gr) <- rownames(se)
-                
-                if (is_zoom) {
-                  # cromosoma concret del selector
-                  chr_sel <- chr_sel_reactive()
-                  # dimensions del plot 
-                  pp <- karyoploteR::getDefaultPlotParams(plot.type = 1)
-                  pp$topmargin      <- 0   
-                  pp$bottommargin   <- 150   
-                  pp$ideogramheight <- 25    
-                  pp$leftmargin     <- 0.15
-                  
-                  # Dibuixem el cariotip base del genoma hg38
-                  # dibuixem el cromosoma selecciont
-                  kp <- karyoploteR::plotKaryotype(
-                    genome      = "hg38",
-                    chromosomes = chr_sel,
-                    plot.type   = 1,
-                    plot.params = pp
-                  )
-                } else {
-                  # sino dibuixem tots els cromosomes
-                  kp <- karyoploteR::plotKaryotype(genome = "hg38", plot.type = 1)
-                }
-                
-                # tots els gens en blau
-                karyoploteR::kpRect(kp, data = gr,
-                                    y0 = 0, y1 = 0.3,
-                                    col = "#3498db55", border = NA)
-                
-                # gen seleccionat a la taula en vermell
-                if (length(sel_rows) > 0 && sel_rows %in% names(gr)) {
-                  karyoploteR::kpRect(kp, data = gr[sel_rows],
-                                      y0 = 0, y1 = 0.7,
-                                      col = "red", border = "red", lwd = 3)
-                }
-              })  
-            })
-  
-  output$isee_ui3 <- renderUI({
-    req(dde2())
-    
-    dde_display <- dde2()
-    
-    # llegim el cromosoma seleccionat 
-    chr_sel <- chr_sel_reactive() 
-    
-    initial_panels <- list()
-    
-    # ------------- PANELLS ---------------
-    
-    # Karyoplot
-    initial_panels[["KaryoPlot"]] <- new("KaryoPlot",
-                                         PanelHeight = 400L,
-                                         PanelWidth  = 6L,
-                                         RowSelectionSource = "RowDataTable1",
-                                         ZoomChr = FALSE)
-    
-    # Zoom - reacciona al chr_selector del sidebar
-    initial_panels[["KaryoPlot2"]] <- new("KaryoPlot",
-                                          PanelHeight = 400L,
-                                          PanelWidth  = 6L,
-                                          RowSelectionSource = "RowDataTable1",
-                                          ZoomChr = TRUE)
-    
-    # GRanges table
-    cols_dea_ocultes <- unlist(lapply(names(dde_display@dea), function(con) {
-      c(paste0(con, "_log2FoldChange"), paste0(con, "_pvalue"), paste0(con, "_padj"))
-    }))
-    initial_panels[["RowDataTable1"]] <- new("RowDataTable",
-                                             Search = chr_sel,
-                                             HiddenColumns = unique(c(cols_dea_ocultes, "Chr", "Start", "End", "Strand", "Geneid")),
-                                             VersionInfo = list(iSEE = structure(list(c(2L, 20L, 0L
-                                             )), class = c("package_version", "numeric_version"))), PanelId = c(RowDataTable = 1L), 
-                                             PanelHeight = 400L, PanelWidth = 12L, SelectionBoxOpen = FALSE, 
-                                             RowSelectionSource = "---", ColumnSelectionSource = "---", 
-                                             DataBoxOpen = FALSE, RowSelectionDynamicSource = FALSE, ColumnSelectionDynamicSource = FALSE, 
-                                             RowSelectionRestrict = FALSE, ColumnSelectionRestrict = FALSE, 
-                                             SelectionHistory = list())
-    
-    
-    # Circus Plot
-    initial_panels[["CircosPlot1"]] <- new("CircosPlot",
-                                           PanelHeight = 400L,
-                                           PanelWidth  = 6L,
-                                           RowSelectionSource = "RowDataTable1",
-                                           Contrast1 = names(dde_display@dea)[1],
-                                           Contrast2 = names(dde_display@dea)[min(2, length(dde_display@dea))])
-    
-    
-    iSEE(
-      dde_display,
-      initial = initial_panels,
-      appTitle = "Genomic Exploration")
-  })
   
 } #server
 shinyApp(ui, server)

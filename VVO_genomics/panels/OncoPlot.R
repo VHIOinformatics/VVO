@@ -11,7 +11,8 @@ setClass("OncoPlot",
            RowFontSize = "numeric",   # mida lletra gens
            ColFontSize   = "numeric",   # mida lletra mostres
            ColDataColors = "list",      # canvi de colors del colData
-           GeneOrder = "character"
+           GeneOrder = "character",
+           SelectedGenes = "character"
          ),
          prototype = prototype(
            MutationAssay = "mutations",
@@ -21,24 +22,31 @@ setClass("OncoPlot",
            RowFontSize = 8,
            ColFontSize = 6,
            ColDataColors = list(),  # per defecte llista buida, s'omple quan l'usuari canvia colors
-           GeneOrder = "mutation_freq"
+           GeneOrder = "mutation_freq",
+           SelectedGenes = character(0)
          )
 )
 
 # Nom del panell
-setMethod(".fullName",   "OncoPlot", function(x) "OncoPrint")
+setMethod(".fullName", "OncoPlot", function(x) "OncoPrint")
 
 # Color del panell
 setMethod(".panelColor", "OncoPlot", function(x) "#E64B35")
 
 # Defineix el tipus d'output: un plotOutput de l'alçada definida al slot PanelHeight
 setMethod(".defineOutput", "OncoPlot", function(x) {
-  plotOutput(.getEncodedName(x), height = paste0(x@PanelHeight, "px"))
+  panel_name <- .getEncodedName(x)
+  tagList(
+    plotOutput(panel_name, height = paste0(x@PanelHeight, "px")),
+    downloadButton(paste0(panel_name, "_downloadPNG"), "Download PNG",
+                   class = "btn-sm", style = "margin-top:8px;")
+  )
 })
 
 # Controls que apareixen dins el box "Data Parameters" del panell
 setMethod(".defineDataInterface", "OncoPlot", function(x, se, select_info) {
   panel_name <- .getEncodedName(x)
+  all_genes  <- sort(rownames(se))
   
   # llegeix i converteix colData a majúscules
   cd <- as.data.frame(lapply(colData(se), function(col) {
@@ -46,7 +54,7 @@ setMethod(".defineDataInterface", "OncoPlot", function(x, se, select_info) {
   }), stringsAsFactors = FALSE, row.names = rownames(colData(se)))
   
   # Detecta quines variables són contínues (numèriques) per no oferir-los selector de color discret
-  is_continuous <- sapply(cd, is.numeric)
+  is_continuous <- vapply(cd, is.numeric, logical(1))
   
   # Per cada variable CATEGÒRICA del colData, crea un desplegable de colors
   color_inputs <- lapply(names(cd)[!is_continuous], function(var) {
@@ -67,20 +75,56 @@ setMethod(".defineDataInterface", "OncoPlot", function(x, se, select_info) {
       # Bloc de colors que només es mostra quan el checkbox està marcat
       conditionalPanel(
         condition = paste0("input['", toggle_id, "'] === true"),
+        
+        # controls de color per cada valor
         lapply(seq_along(vals), function(i) {
           input_id <- paste0(panel_name, "_color_", var, "_", i)
+          hex_input_id <- paste0(input_id, "_hex")
           
-          # Si ja hi ha un color guardat al slot per aquest valor, usa'l; si no, usa el default
           current_color <- tryCatch(x@ColDataColors[[var]][i], error = function(e) NULL)
           default_color <- if (!is.null(current_color) && !is.na(current_color)) current_color else default_pal[i]
           
-          # Fila amb el nom del valor i el textInput per escriure el codi hex del color
           div(style = "display:flex; align-items:center; gap:8px; margin-bottom:4px; padding-left:10px;",
               tags$span(vals[i], style = "min-width:80px; font-size:12px;"),
-              textInput(input_id, label = NULL, value = default_color,
-                        width = "90px", placeholder = "#rrggbb")
+              
+              # Color picker visual
+              colourpicker::colourInput(
+                input_id, label = NULL, value = default_color,
+                palette = "square", showColour = "background", width = "40px"
+              ),
+              
+              # Text input per hex manual
+              div(textInput(
+                hex_input_id, label = NULL, value = default_color,
+                placeholder = "#XXXXXX"),
+                style = "width:90px; font-family:monospace; font-size:11px;"
+              )
           )
         })
+      ),
+      tags$hr()
+    )
+  })
+  
+  # Per cada variable contínua, crea un selector de color (gradient blanc -> color)
+  continuous_color_inputs <- lapply(names(cd)[is_continuous], function(var) {
+    toggle_id <- paste0(panel_name, "_show_", var)
+    input_id  <- paste0(panel_name, "_color_", var)
+    
+    saved <- tryCatch(x@ColDataColors[[var]], error = function(e) NULL)
+    default_color <- if (!is.null(saved) && !is.na(saved)) saved else "#B2182B"
+    
+    tagList(
+      checkboxInput(toggle_id, label = var, value = FALSE),
+      conditionalPanel(
+        condition = paste0("input['", toggle_id, "'] === true"),
+        div(style = "display:flex; align-items:center; gap:8px; margin-bottom:4px; padding-left:10px;",
+            tags$span("Color", style = "min-width:80px; font-size:12px;"),
+            colourpicker::colourInput(
+              input_id, label = NULL, value = default_color,
+              palette = "square", showColour = "background", width = "40px"
+            )
+        )
       ),
       tags$hr()
     )
@@ -90,8 +134,17 @@ setMethod(".defineDataInterface", "OncoPlot", function(x, se, select_info) {
   list(
     numericInput(
       paste0(panel_name, "_TopNGenes"),
-      label = "Top N mutated genes (% samples):",
+      label = "Show genes mutated in at least (%):",
       value = x@TopNGenes, min = 2, max = nrow(se), step = 1),
+    
+    selectizeInput(
+      paste0(panel_name, "_SelectedGenes"),
+      label = "Add specific genes:",
+      choices = all_genes,
+      selected = x@SelectedGenes,
+      multiple = TRUE,
+      options = list(placeholder = "Type a gene name...")
+    ),
     
     if (!is.null(metadata(se)$tcga_annotation)) {
       radioButtons(paste0(panel_name, "_GeneOrder"),
@@ -101,8 +154,8 @@ setMethod(".defineDataInterface", "OncoPlot", function(x, se, select_info) {
                    selected = x@GeneOrder)
     },
     
-    # Només mostra la secció de colors si hi ha colData carregat
-    if (sum(!is_continuous) > 0) tagList(tags$strong("ColData colors:"), tags$hr(), color_inputs),
+    # Mostra la secció de colors si hi ha qualsevol columna de colData (categòrica o contínua)
+    if (ncol(cd) > 0) tagList(tags$strong("ColData colors:"), tags$hr(), color_inputs, continuous_color_inputs),
     
     numericInput(
       paste0(panel_name, "_RowFontSize"),
@@ -174,10 +227,17 @@ setMethod(".createObservers", "OncoPlot",
               .requestUpdate(panel_name, rObjects)
             }, ignoreInit = TRUE)
             
+            # Quan canvien els gens seleccionats manualment -> actualitza el slot i força re-dibuix
+            observeEvent(input[[paste0(panel_name, "_SelectedGenes")]], {
+              sel <- input[[paste0(panel_name, "_SelectedGenes")]]
+              pObjects$memory[[panel_name]]@SelectedGenes <- if (is.null(sel)) character(0) else sel
+              .requestUpdate(panel_name, rObjects)
+            }, ignoreInit = TRUE, ignoreNULL = FALSE)
+            
             # Observer per canviar ordre dels gens depenent de TCGA 
             observeEvent(input[[paste0(panel_name, "_GeneOrder")]], {
-                pObjects$memory[[panel_name]]@GeneOrder <- input[[paste0(panel_name, "_GeneOrder")]]
-                .requestUpdate(panel_name, rObjects)
+              pObjects$memory[[panel_name]]@GeneOrder <- input[[paste0(panel_name, "_GeneOrder")]]
+              .requestUpdate(panel_name, rObjects)
             }, ignoreInit = TRUE)
             
             # Calcula cd aquí per poder-lo usar als observadors de colors
@@ -187,7 +247,18 @@ setMethod(".createObservers", "OncoPlot",
             for (var in names(cd)) {
               local({
                 v <- var
-                if (is.numeric(cd[[v]])) return() 
+                
+                if (is.numeric(cd[[v]])) {
+                  input_id <- paste0(panel_name, "_color_", v)
+                  observeEvent(input[[input_id]], {
+                    new_colors <- pObjects$memory[[panel_name]]@ColDataColors
+                    new_colors[[v]] <- input[[input_id]]
+                    pObjects$memory[[panel_name]]@ColDataColors <- new_colors
+                    .requestUpdate(panel_name, rObjects)
+                  }, ignoreInit = TRUE)
+                  
+                  return()
+                } 
                 vals <- sort(unique(na.omit(as.character(cd[[v]]))))
                 n <- length(vals)
                 
@@ -195,22 +266,65 @@ setMethod(".createObservers", "OncoPlot",
                 fixed_colors <- c("#87D2E6", "#CB87E6", "#E69C87")
                 default_pal <- if (n <= 3) fixed_colors[seq_len(n)] else colorRampPalette(RColorBrewer::brewer.pal(8, "Set2"))(n)
                 
-                for (idx in seq_along(vals)) {
+                for (var in names(cd)) {
                   local({
-                    i <- idx
-                    input_id <- paste0(panel_name, "_color_", v, "_", i)
-                    observeEvent(input[[input_id]], {
-                      new_colors <- pObjects$memory[[panel_name]]@ColDataColors
+                    v <- var
+                    
+                    if (is.numeric(cd[[v]])) {
+                      input_id <- paste0(panel_name, "_color_", v)
+                      observeEvent(input[[input_id]], {
+                        new_colors <- pObjects$memory[[panel_name]]@ColDataColors
+                        new_colors[[v]] <- input[[input_id]]
+                        pObjects$memory[[panel_name]]@ColDataColors <- new_colors
+                        .requestUpdate(panel_name, rObjects)
+                      }, ignoreInit = TRUE)
+                      return()
+                    } 
+                    
+                    vals <- sort(unique(na.omit(as.character(cd[[v]]))))
+                    n <- length(vals)
+                    
+                    fixed_colors <- c("#87D2E6", "#CB87E6", "#E69C87")
+                    default_pal <- if (n <= 3) fixed_colors[seq_len(n)] else colorRampPalette(RColorBrewer::brewer.pal(8, "Set2"))(n)
+                    
+                    # Defineix la funció
+                    create_color_observers <- function(panel_name, variable, i, values, pal, 
+                                                       session, pObjects, rObjects, se, input) {
+                      input_id <- paste0(panel_name, "_color_", variable, "_", i)
+                      hex_input_id <- paste0(input_id, "_hex")
                       
-                      # Si la variable encara no té colors guardats, inicialitza amb els defaults
-                      if (is.null(new_colors[[v]])) {
-                        new_colors[[v]] <- setNames(default_pal, vals)
-                      }
-                      # Actualitza només el color del valor que ha canviat
-                      new_colors[[v]][i] <- input[[input_id]]
-                      pObjects$memory[[panel_name]]@ColDataColors <- new_colors
-                      .requestUpdate(panel_name, rObjects)
-                    }, ignoreInit = TRUE)
+                      observeEvent(input[[input_id]], {
+                        new_colors <- pObjects$memory[[panel_name]]@ColDataColors
+                        if (is.null(new_colors[[variable]])) {
+                          new_colors[[variable]] <- setNames(pal, values)
+                        }
+                        new_colors[[variable]][values[i]] <- input[[input_id]]
+                        pObjects$memory[[panel_name]]@ColDataColors <- new_colors
+                        
+                        shinyjs::runjs(paste0("$('#", hex_input_id, "').val('", input[[input_id]], "');"))
+                        .requestUpdate(panel_name, rObjects)
+                      }, ignoreInit = TRUE)
+                      
+                      observeEvent(input[[hex_input_id]], {
+                        hex_val <- input[[hex_input_id]]
+                        
+                        new_colors <- pObjects$memory[[panel_name]]@ColDataColors
+                        if (is.null(new_colors[[variable]])) {
+                          new_colors[[variable]] <- setNames(pal, values)
+                        }
+                        new_colors[[variable]][values[i]] <- hex_val
+                        pObjects$memory[[panel_name]]@ColDataColors <- new_colors
+                        
+                        colourpicker::updateColourInput(session, input_id, value = hex_val)
+                        .requestUpdate(panel_name, rObjects)
+                      }, ignoreInit = TRUE, ignoreNULL = FALSE)
+                    }
+                    
+                    # crida la funció per a cada valor
+                    for (i in seq_along(vals)) {
+                      create_color_observers(panel_name, v, i, vals, default_pal, 
+                                             session, pObjects, rObjects, se, input)
+                    }
                   })
                 }
               })
@@ -232,7 +346,7 @@ setMethod(".renderOutput", "OncoPlot",
               force(rObjects[[paste0(panel_name, "_INTERNAL_output_update")]])
               
               force(rObjects[[paste0(panel_src_row, "_INTERNAL_single_select")]])
-             
+              
               # llegim els noms de mostra ja filtrats
               filtered_samples <- rObjects[[paste0(panel_name, "_filtered_samples")]]
               
@@ -289,6 +403,11 @@ setMethod(".renderOutput", "OncoPlot",
               # Gens que superen el % mínim (top_n)
               genes_pass <- names(pct_mut[pct_mut >= top_n])
               
+              # Afegeix els gens triats manualment encara que no arribin al % mínim
+              selected_genes <- if (!is.null(current)) current@SelectedGenes else character(0)
+              selected_genes <- intersect(selected_genes, rownames(mut_mat))
+              genes_pass <- union(genes_pass, selected_genes)
+              
               if (!is.null(gene_annot) && "Gene" %in% names(gene_annot) && gene_order == "tcga") {
                 gene_annot_sorted <- gene_annot[order(
                   as.numeric(gsub("%", "", gene_annot$Freq)), decreasing = TRUE), ]
@@ -307,6 +426,8 @@ setMethod(".renderOutput", "OncoPlot",
               if (length(top) > max_genes) {
                 top <- top[seq_len(max_genes)]
               }
+              # si es selecciona un gen fora dels 75 que tmb surti
+              top <- union(top, selected_genes)
               
               # Si el gen coincideix amb el primer gen (selecció automàtica per defecte d'iSEE), no el marquem
               if (!is.null(sel_gene) && length(top) > 0 && identical(sel_gene, top[1])) {
@@ -322,16 +443,22 @@ setMethod(".renderOutput", "OncoPlot",
                 tcga_vals <- gene_annot$Freq[idx]
                 tcga_vals <- ifelse(is.na(tcga_vals), "0%", tcga_vals)
                 
+                annot_title <- metadata(se)$tcga_annotation_name
+                if (is.null(annot_title) || annot_title == "") annot_title <- "Reference\ncohort"
+                
                 left_annot <- HeatmapAnnotation(
                   which = "row",
-                  `Reference\ncohort`  = anno_text(tcga_vals, show_name = TRUE),
-                  annotation_name_side = "top",
+                  Reference = anno_text(tcga_vals, show_name = TRUE),
+                  annotation_label = annot_title,
+                  annotation_name_side = "bottom",
                   annotation_name_rot  = 0,
                   annotation_name_gp   = gpar(fontsize = 8, fontface = "bold")
                 )
               } else {
                 left_annot <- NULL
               }
+              
+              
               # Llegeix colData del SE si existeix i converteix a majúscules tot 
               cd <- as.data.frame(lapply(colData(se), function(col) {
                 if (is.character(col) || is.factor(col)) toupper(as.character(col)) else col
@@ -344,33 +471,69 @@ setMethod(".renderOutput", "OncoPlot",
                 fixed_colors <- c("#87D2E6", "#CB87E6", "#E69C87")
                 saved_colors <- if (!is.null(current)) current@ColDataColors else list()
                 
-                # Detecta variables contínues per no forçar-les a paleta categorica
-                is_continuous <- sapply(cd, is.numeric)
+                # Detecta quines variables del colData són contínues (numèriques)
+                is_continuous <- vapply(cd, is.numeric, logical(1))
                 
-                # Per cada variable categòrica, decideix quins colors usar al plot
-                col_data_colors <- lapply(names(cd)[!is_continuous], function(var) {
+                # Per cada variable categòrica, decideix quin color li correspon a cada valor
+                cat_colors <- lapply(names(cd)[!is_continuous], function(var) {
+                  
+                  # Valors únics que pot prendre la variable (ex: "MALE", "FEMALE")
                   vals <- sort(unique(na.omit(as.character(cd[[var]]))))
                   n <- length(vals)
-                  default_pal <- if (n <= 3) fixed_colors[seq_len(n)] else colorRampPalette(RColorBrewer::brewer.pal(8, "Set2"))(n)
                   
-                  if (!is.null(saved_colors[[var]]) && length(saved_colors[[var]]) == n) {
-                    saved_colors[[var]]
+                  # Si hi ha MÉS de 12 categories, assigna gris a totes
+                  if (n > 12) {
+                    setNames(rep("#CCCCCC", n), vals)  # Gris per a totes
                   } else {
-                    setNames(default_pal, vals)
+                    # Paleta per defecte
+                    fixed_colors <- c("#87D2E6", "#CB87E6", "#E69C87")
+                    default_pal <- if (n <= 3) fixed_colors[seq_len(n)] else colorRampPalette(RColorBrewer::brewer.pal(12, "Set3"))(n)
+                    
+                    # Si l'usuari ja ha guardat colors per aquesta variable fem servir aquests
+                    if (!is.null(saved_colors[[var]]) && length(saved_colors[[var]]) == n) {
+                      saved_colors[[var]]
+                    } else {
+                      setNames(default_pal, vals)
+                    }
                   }
                 })
-                names(col_data_colors) <- names(cd)[!is_continuous]
+                names(cat_colors) <- names(cd)[!is_continuous]
+                
+                # Per cada variable numèrica, crea un gradient que va de blanc (valor mínim) fins a un color (valor màxim)
+                cont_colors <- lapply(names(cd)[is_continuous], function(var) {
+                  
+                  # Rang de valors de la variable (mínim i màxim), ignorant NA
+                  rng <- range(cd[[var]], na.rm = TRUE)
+                  
+                  # Color guardat per l'usuari per aquesta variable (si n'hi ha)
+                  saved <- saved_colors[[var]]
+                  
+                  # Si hi ha color guardat el fem servir, si no, color vermell per defecte
+                  color <- if (!is.null(saved) && !is.na(saved)) saved else "#B2182B"
+                  
+                  # colorRamp2 crea la funció de gradient
+                  circlize::colorRamp2(c(rng[1], rng[2]), c("white", color))
+                })
+                names(cont_colors) <- names(cd)[is_continuous]
+                
+                # Uneix els colors categòrics i continus en una sola llista per passar-la a HeatmapAnnotation
+                col_data_colors <- c(cat_colors, cont_colors)
                 
                 # Crea l'anotació inferior del heatmap amb els colors decidits
-                bottom_annot <- HeatmapAnnotation(
-                  which                = "col",
-                  df                   = cd,
-                  col                  = col_data_colors,
-                  na_col               = "#CCCCCC",
-                  annotation_name_side = "left",
-                  annotation_name_rot  = 0,
-                  annotation_name_gp   = gpar(fontsize = 8, fontface = "bold"),
-                  simple_anno_size     = unit(0.2, "cm"))
+                tryCatch({
+                  bottom_annot <- HeatmapAnnotation(
+                    which                = "col",
+                    df                   = cd,
+                    col                  = col_data_colors,
+                    na_col               = "#CCCCCC",
+                    annotation_name_side = "left",
+                    annotation_name_rot  = 0,
+                    annotation_name_gp   = gpar(fontsize = 8, fontface = "bold"),
+                    simple_anno_size     = unit(0.2, "cm"))
+                }, error = function(e) {
+                  message("Warning: Could not map colors to colData levels. Disabling colData annotation.")
+                  bottom_annot <<- NULL  # Si falla, no mostra l'anotació
+                })
               } else {
                 bottom_annot <- NULL
               }
@@ -381,7 +544,7 @@ setMethod(".renderOutput", "OncoPlot",
               # Calcula l'ordre de files abans del oncoPrint
               row_order <- seq_len(nrow(mut_mat))
               
-              ComplexHeatmap::oncoPrint(
+              ht <- ComplexHeatmap::oncoPrint(
                 mat                     = mut_mat,
                 col                     = col,
                 column_order            = col_order,
@@ -405,9 +568,24 @@ setMethod(".renderOutput", "OncoPlot",
                 bottom_annotation       = bottom_annot,
                 left_annotation         = left_annot
               )
+              # guarda l'últim plot dibuixat perquè el botó de descàrrega el reutilitzi
+              pObjects[[paste0(panel_name, "_last_oncoplot")]] <- ht
+              ht
             })
+            
+            # Handler de descàrrega: redibuixa l'últim oncoPrint guardat
+            output[[paste0(panel_name, "_downloadPNG")]] <- downloadHandler(
+              filename = function() paste0("oncoplot_", Sys.Date(), ".png"),
+              content  = function(file) {
+                ht <- pObjects[[paste0(panel_name, "_last_oncoplot")]]
+                png(file, width = 14, height = 10, units = "in", res = 200)
+                ComplexHeatmap::draw(ht)
+                dev.off()
+              }
+            )
           }
 )
+
 # Necessari per iSEE: retorna contingut buit
 setMethod(".generateOutput", "OncoPlot",
           function(x, se, ..., all_memory, all_contents) list(contents = NULL, commands = list())

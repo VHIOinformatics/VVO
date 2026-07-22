@@ -13,7 +13,7 @@ options(shiny.maxRequestSize = 50 * 1024^2)
 source("panels/OncoPlot.R")
 
 # Converteix la matriu de mutacions en un SummarizedExperiment per passar a iSEE
-build_se <- function(mat, vc_legend = NULL, col_data = NULL, tcga_annot = NULL) {
+build_se <- function(mat, vc_legend = NULL, col_data = NULL, tcga_annot = NULL, tcga_annot_name = NULL) {
   
   # Si hi ha llegenda de variants, substitueix els codis numèrics de la matriu pels noms de les mutacions
   if (!is.null(vc_legend)) {
@@ -54,6 +54,7 @@ build_se <- function(mat, vc_legend = NULL, col_data = NULL, tcga_annot = NULL) 
   # si hi ha file tcga, ficar-lo a metadata del SummarizedExperiment
   if (!is.null(tcga_annot)) {
     metadata(se)$tcga_annotation <- tcga_annot
+    metadata(se)$tcga_annotation_name <- tcga_annot_name
   }
   
   se
@@ -109,6 +110,14 @@ ui <- dashboardPage(
                        "Annotation impact:",
                        choices  = c("HIGH", "MODERATE", "MODIFIER"),
                        selected = c("HIGH", "MODERATE", "MODIFIER")),
+    # CGI
+    uiOutput("cgi_ui"),
+    
+    # oncoKB
+    uiOutput("oncokb_ui"),
+    
+    # Selector dinàmic dels tipus de mutació a mostrar
+    uiOutput("mutation_types_ui"),
     
     tags$hr(style = "border-top: 1px solid white; margin-top:4px; margin-bottom:4px;"),
     
@@ -128,9 +137,27 @@ ui <- dashboardPage(
   dashboardBody(
     includeCSS(system.file(package = "iSEE", "www", "iSEE.css")),
     
-    tags$head(tags$style(HTML("
-      iframe.shiny-frame { height: 1200px !important; }
-    "))),
+    tags$head(
+      tags$style(HTML("
+        iframe.shiny-frame { height: 1200px !important; }
+      ")),
+      tags$script(HTML("
+        function amagaDownloadISEE() {
+          var ifr = document.querySelector('iframe.shiny-frame');
+          if (!ifr) return;
+          try {
+            var doc = ifr.contentDocument || ifr.contentWindow.document;
+            if (!doc || !doc.head) return;
+            if (doc.getElementById('hide-isee-download')) return;  
+            var st = doc.createElement('style');
+            st.id = 'hide-isee-download';
+            st.textContent = 'li.dropdown:has(i.fa-download[aria-label=\"download icon\"]) { display: none !important; }';
+            doc.head.appendChild(st);
+          } catch (e) {}
+        }
+        setInterval(amagaDownloadISEE, 800);
+      "))
+    ),
     
     tabItems(
       tabItem(tabName = "mut_tab",  uiOutput("isee_ui")),
@@ -150,6 +177,29 @@ server <- function(input, output, session) {
   maf_loaded <- reactive({
     req(input$excel_file)
     tumor_only <- as.logical(input$tumor_only)
+    
+    # Llegeix NOMÉS els noms de columna (n_max = 0, no carrega dades)
+    cols <- names(readxl::read_excel(input$excel_file$datapath, n_max = 0))
+    
+    # Un fitxer Paired té columnes Control_*; un Tumor only no en té
+    has_control <- any(grepl("^Control_", cols, ignore.case = TRUE))
+    
+    # Comprova que el mode seleccionat coincideix amb el fitxer pujat
+    if (tumor_only && has_control) {
+      showNotification(
+        "Wrong variant calling mode: you selected 'Tumor only', but this file was generated in 'Paired' mode. Please switch the variant calling mode.",
+        type = "error", duration = NULL
+      )
+      req(FALSE)
+    }
+    if (!tumor_only && !has_control) {
+      showNotification(
+        "Wrong variant calling mode: you selected 'Paired', but this file was generated in 'Tumor Only' mode. Please switch the variant calling mode.",
+        type = "error", duration = NULL
+      )
+      req(FALSE)
+    }
+    
     fromParse2MAF(path_to_parse = input$excel_file$datapath, tumor_only = tumor_only)
   })
   
@@ -178,13 +228,59 @@ server <- function(input, output, session) {
                 min = 0, max = 1, value = 0, step = 0.05)
   })
   
+  # Tipus de mutació que l'oncoplot realment és capaç de dibuixar
+  mutation_types_available <- c("Frame_Shift_Del", "Frame_Shift_Ins", "Splice_Site",
+                                "Translation_Start_Site", "Nonsense_Mutation",
+                                "Nonstop_Mutation", "In_Frame_Del", "In_Frame_Ins",
+                                "Missense_Mutation")
+  
+  # desplegable per a triar el tipus de mutació que vol que surti al plot
+  output$mutation_types_ui <- renderUI({
+    req(maf_loaded())
+    
+    # Només mostra com a opcions els tipus que a la vegada existeixen al fitxer I es poden dibuixar
+    vals <- intersect(mutation_types_available, unique(na.omit(maf_loaded()$Variant_Classification)))
+    
+    selectizeInput("mutation_types",
+                   "Mutation types to show:",
+                   choices  = vals,
+                   selected = vals,
+                   multiple = TRUE)
+  })
+  
+  output$cgi_ui <- renderUI({
+    req(maf_loaded())
+    # Si la columna no existeix, no es mostra res
+    if (!"CGI-Oncogenic Summary" %in% names(maf_loaded())) return(NULL)
+    # Si existeix, mostra directament les opcions (com annott)
+    checkboxGroupInput("cgi_list", "CGI Oncogenic Summary:",
+                       choices  = c("Oncogenic (predicted by BoostDM)",
+                                    "Oncogenic (predicted by RulesDM)",
+                                    "Oncogenic (annotated and predicted by BoostDM)",
+                                    "Potentially Oncogenic (predicted by RulesDM)"),
+                       selected = c("Oncogenic (predicted by BoostDM)",
+                                    "Oncogenic (predicted by RulesDM)",
+                                    "Oncogenic (annotated and predicted by BoostDM)",
+                                    "Potentially Oncogenic (predicted by RulesDM)")
+    )
+  })
+  
+  output$oncokb_ui <- renderUI({
+    req(maf_loaded())
+    # Si la columna no existeix, no es mostra res
+    if (!"OncoKB" %in% names(maf_loaded())) return(NULL)
+    # Si existeix, mostra directament les opcions (com annott)
+    checkboxGroupInput("oncokb_list", "OncoKB:",
+                       choices  = c("Likely Oncogenic", "Oncogenic"),
+                       selected = c("Likely Oncogenic", "Oncogenic"))
+  })
+  
   # desplegable per les variables de colData
   output$coldata_columns_ui <- renderUI({
     req(coldata_raw())
     
     # Totes les columnes excepte l'identificador de mostra
     vals <- setdiff(names(coldata_raw()), "Tumor_Sample_Barcode")
-    
     # Per defecte, les 4 primeres
     default_sel <- vals[seq_len(min(4, length(vals)))]
     
@@ -214,7 +310,17 @@ server <- function(input, output, session) {
                              VAF_control = if (!is.null(input$VAF_control)) input$VAF_control else 0,
                              total_tumor_reads = if (!is.null(input$total_tumor_reads)) input$total_tumor_reads else 0,
                              alt_tumor_reads = if (!is.null(input$alt_tumor_reads)) input$alt_tumor_reads else 0,
-                             annott = if (!is.null(input$annott)) input$annott else c("HIGH", "MODERATE", "MODIFIER"))
+                             annott = if (!is.null(input$annott)) input$annott else c("HIGH", "MODERATE", "MODIFIER"),
+                             cgi    = !is.null(input$cgi_list) && length(input$cgi_list) > 0,
+                             cgi_list = if (!is.null(input$cgi_list)) input$cgi_list else character(0),
+                             oncokb = !is.null(input$oncokb_list) && length(input$oncokb_list) > 0,
+                             oncokb_list = if (!is.null(input$oncokb_list)) input$oncokb_list else character(0))
+    
+    # Filtra pels tipus de mutació seleccionats (ABANS de prepareForOncoplot)
+    if (!is.null(input$mutation_types) && length(input$mutation_types) > 0) {
+      filtered_df <- filtered_df[filtered_df$Variant_Classification %in% input$mutation_types, ]
+    }
+    
     # Prepara la matriu d'oncoplots a partir del MAF filtrat
     result <- prepareForOncoplot(filtered_df, save_matrix = FALSE, save_tmb = FALSE)
     
@@ -227,13 +333,16 @@ server <- function(input, output, session) {
     
     # Carrega la tcga annotation si s'ha proporcionat
     tcga_annot <- NULL
+    tcga_annot_name <- NULL
     if (!is.null(input$tcga_annotation_file)) {
       tcga_annot <- read.delim(input$tcga_annotation_file$datapath,
                                header = TRUE, sep = "\t",
                                stringsAsFactors = FALSE, check.names = FALSE)
+      tcga_annot_name <- tools::file_path_sans_ext(input$tcga_annotation_file$name)  # <-- NOU
     }
     # Construeix i retorna el SummarizedExperiment final  
-    build_se(result$oncomatrix, vc_legend = result$vc_legend, col_data = col_data, tcga_annot = tcga_annot)
+    build_se(result$oncomatrix, vc_legend = result$vc_legend, col_data = col_data,
+             tcga_annot = tcga_annot, tcga_annot_name = tcga_annot_name)
   })
 
   # --------- Panells iSEE -----------
@@ -245,21 +354,16 @@ server <- function(input, output, session) {
       new("OncoPlot",
           MutationAssay      = "mutations",
           TopNGenes          = 5,
-          RowSelectionSource = "RowDataTable1",
           ColumnSelectionSource = "ColumnDataTable1",
           PanelWidth         = 12L,
-          PanelHeight        = 600L),
-      
-      new("RowDataTable",
-          PanelWidth  = 6L,
-          PanelHeight = 600L)
+          PanelHeight        = 600L)
     )
     
     # Afegeix ColumnDataTable només si hi ha colData carregat
     if (!is.null(input$coldata_file) && ncol(colData(se)) > 0) {
       panels <- c(panels, list(
         new("ColumnDataTable",
-            PanelWidth  = 6L,
+            PanelWidth  = 12L,
             PanelHeight = 600L)
       ))
     }
