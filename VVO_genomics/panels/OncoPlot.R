@@ -110,6 +110,7 @@ setMethod(".defineDataInterface", "OncoPlot", function(x, se, select_info) {
   continuous_color_inputs <- lapply(names(cd)[is_continuous], function(var) {
     toggle_id <- paste0(panel_name, "_show_", var)
     input_id  <- paste0(panel_name, "_color_", var)
+    hex_input_id <- paste0(input_id, "_hex")
     
     saved <- tryCatch(x@ColDataColors[[var]], error = function(e) NULL)
     default_color <- if (!is.null(saved) && !is.na(saved)) saved else "#B2182B"
@@ -120,9 +121,18 @@ setMethod(".defineDataInterface", "OncoPlot", function(x, se, select_info) {
         condition = paste0("input['", toggle_id, "'] === true"),
         div(style = "display:flex; align-items:center; gap:8px; margin-bottom:4px; padding-left:10px;",
             tags$span("Color", style = "min-width:80px; font-size:12px;"),
+            
+            # Color picker visual
             colourpicker::colourInput(
               input_id, label = NULL, value = default_color,
               palette = "square", showColour = "background", width = "40px"
+            ),
+            
+            # Text input per hex manual (igual que categòriques)
+            div(textInput(
+              hex_input_id, label = NULL, value = default_color,
+              placeholder = "#XXXXXX"),
+              style = "width:90px; font-family:monospace; font-size:11px;"
             )
         )
       ),
@@ -240,91 +250,85 @@ setMethod(".createObservers", "OncoPlot",
               .requestUpdate(panel_name, rObjects)
             }, ignoreInit = TRUE)
             
-            # Calcula cd aquí per poder-lo usar als observadors de colors
-            cd <- as.data.frame(colData(se))
+            # --- Observers de colors ---
+            cd <- as.data.frame(lapply(colData(se), function(col) {
+              if (is.character(col) || is.factor(col)) toupper(as.character(col)) else col
+            }), stringsAsFactors = FALSE, row.names = rownames(colData(se)))
+            is_continuous <- vapply(cd, is.numeric, logical(1))
             
-            # Crea un observador per cada variable del colData i per cada valor d'aquesta variable
-            for (var in names(cd)) {
+            # VARIABLES CONTÍNUES 
+            for (var in names(cd)[is_continuous]) {
+              local({
+                v <- var
+                input_id <- paste0(panel_name, "_color_", v)
+                hex_input_id <- paste0(input_id, "_hex")
+                
+                # Observador 1
+                observeEvent(input[[input_id]], {
+                  new_colors <- pObjects$memory[[panel_name]]@ColDataColors
+                  new_colors[[v]] <- input[[input_id]]
+                  pObjects$memory[[panel_name]]@ColDataColors <- new_colors
+                  
+                  shinyjs::runjs(paste0("$('#", hex_input_id, "').val('", input[[input_id]], "');"))
+                  .requestUpdate(panel_name, rObjects)
+                }, ignoreInit = TRUE)
+                
+                # Observador 2
+                observeEvent(input[[hex_input_id]], {
+                  hex_val <- input[[hex_input_id]]
+                  
+                  new_colors <- pObjects$memory[[panel_name]]@ColDataColors
+                  new_colors[[v]] <- hex_val
+                  pObjects$memory[[panel_name]]@ColDataColors <- new_colors
+                  
+                  colourpicker::updateColourInput(session, input_id, value = hex_val)
+                  .requestUpdate(panel_name, rObjects)
+                }, ignoreInit = TRUE, ignoreNULL = FALSE)
+              })
+            }
+            
+            # VARIABLES CATEGÒRIQUES
+            for (var in names(cd)[!is_continuous]) {
               local({
                 v <- var
                 
-                if (is.numeric(cd[[v]])) {
-                  input_id <- paste0(panel_name, "_color_", v)
-                  observeEvent(input[[input_id]], {
-                    new_colors <- pObjects$memory[[panel_name]]@ColDataColors
-                    new_colors[[v]] <- input[[input_id]]
-                    pObjects$memory[[panel_name]]@ColDataColors <- new_colors
-                    .requestUpdate(panel_name, rObjects)
-                  }, ignoreInit = TRUE)
-                  
-                  return()
-                } 
                 vals <- sort(unique(na.omit(as.character(cd[[v]]))))
                 n <- length(vals)
                 
-                # Mateixa paleta de defaults que al defineDataInterface per consistència
                 fixed_colors <- c("#87D2E6", "#CB87E6", "#E69C87")
                 default_pal <- if (n <= 3) fixed_colors[seq_len(n)] else colorRampPalette(RColorBrewer::brewer.pal(8, "Set2"))(n)
                 
-                for (var in names(cd)) {
+                for (i in seq_along(vals)) {
                   local({
-                    v <- var
+                    idx <- i
+                    input_id <- paste0(panel_name, "_color_", v, "_", idx)
+                    hex_input_id <- paste0(input_id, "_hex")
                     
-                    if (is.numeric(cd[[v]])) {
-                      input_id <- paste0(panel_name, "_color_", v)
-                      observeEvent(input[[input_id]], {
-                        new_colors <- pObjects$memory[[panel_name]]@ColDataColors
-                        new_colors[[v]] <- input[[input_id]]
-                        pObjects$memory[[panel_name]]@ColDataColors <- new_colors
-                        .requestUpdate(panel_name, rObjects)
-                      }, ignoreInit = TRUE)
-                      return()
-                    } 
-                    
-                    vals <- sort(unique(na.omit(as.character(cd[[v]]))))
-                    n <- length(vals)
-                    
-                    fixed_colors <- c("#87D2E6", "#CB87E6", "#E69C87")
-                    default_pal <- if (n <= 3) fixed_colors[seq_len(n)] else colorRampPalette(RColorBrewer::brewer.pal(8, "Set2"))(n)
-                    
-                    # Defineix la funció
-                    create_color_observers <- function(panel_name, variable, i, values, pal, 
-                                                       session, pObjects, rObjects, se, input) {
-                      input_id <- paste0(panel_name, "_color_", variable, "_", i)
-                      hex_input_id <- paste0(input_id, "_hex")
+                    observeEvent(input[[input_id]], {
+                      new_colors <- pObjects$memory[[panel_name]]@ColDataColors
+                      if (is.null(new_colors[[v]])) {
+                        new_colors[[v]] <- setNames(default_pal, vals)
+                      }
+                      new_colors[[v]][vals[idx]] <- input[[input_id]]
+                      pObjects$memory[[panel_name]]@ColDataColors <- new_colors
                       
-                      observeEvent(input[[input_id]], {
-                        new_colors <- pObjects$memory[[panel_name]]@ColDataColors
-                        if (is.null(new_colors[[variable]])) {
-                          new_colors[[variable]] <- setNames(pal, values)
-                        }
-                        new_colors[[variable]][values[i]] <- input[[input_id]]
-                        pObjects$memory[[panel_name]]@ColDataColors <- new_colors
-                        
-                        shinyjs::runjs(paste0("$('#", hex_input_id, "').val('", input[[input_id]], "');"))
-                        .requestUpdate(panel_name, rObjects)
-                      }, ignoreInit = TRUE)
-                      
-                      observeEvent(input[[hex_input_id]], {
-                        hex_val <- input[[hex_input_id]]
-                        
-                        new_colors <- pObjects$memory[[panel_name]]@ColDataColors
-                        if (is.null(new_colors[[variable]])) {
-                          new_colors[[variable]] <- setNames(pal, values)
-                        }
-                        new_colors[[variable]][values[i]] <- hex_val
-                        pObjects$memory[[panel_name]]@ColDataColors <- new_colors
-                        
-                        colourpicker::updateColourInput(session, input_id, value = hex_val)
-                        .requestUpdate(panel_name, rObjects)
-                      }, ignoreInit = TRUE, ignoreNULL = FALSE)
-                    }
+                      shinyjs::runjs(paste0("$('#", hex_input_id, "').val('", input[[input_id]], "');"))
+                      .requestUpdate(panel_name, rObjects)
+                    }, ignoreInit = TRUE)
                     
-                    # crida la funció per a cada valor
-                    for (i in seq_along(vals)) {
-                      create_color_observers(panel_name, v, i, vals, default_pal, 
-                                             session, pObjects, rObjects, se, input)
-                    }
+                    observeEvent(input[[hex_input_id]], {
+                      hex_val <- input[[hex_input_id]]
+                      
+                      new_colors <- pObjects$memory[[panel_name]]@ColDataColors
+                      if (is.null(new_colors[[v]])) {
+                        new_colors[[v]] <- setNames(default_pal, vals)
+                      }
+                      new_colors[[v]][vals[idx]] <- hex_val
+                      pObjects$memory[[panel_name]]@ColDataColors <- new_colors
+                      
+                      colourpicker::updateColourInput(session, input_id, value = hex_val)
+                      .requestUpdate(panel_name, rObjects)
+                    }, ignoreInit = TRUE, ignoreNULL = FALSE)
                   })
                 }
               })
@@ -487,7 +491,7 @@ setMethod(".renderOutput", "OncoPlot",
                   } else {
                     # Paleta per defecte
                     fixed_colors <- c("#87D2E6", "#CB87E6", "#E69C87")
-                    default_pal <- if (n <= 3) fixed_colors[seq_len(n)] else colorRampPalette(RColorBrewer::brewer.pal(12, "Set3"))(n)
+                    default_pal <- if (n <= 3) fixed_colors[seq_len(n)] else colorRampPalette(RColorBrewer::brewer.pal(8, "Set2"))(n)
                     
                     # Si l'usuari ja ha guardat colors per aquesta variable fem servir aquests
                     if (!is.null(saved_colors[[var]]) && length(saved_colors[[var]]) == n) {
