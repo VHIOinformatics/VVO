@@ -1,4 +1,3 @@
-
 library(shiny)
 library(shinyjs)
 library(shinydashboard)
@@ -24,8 +23,6 @@ library(ggrepel)
 library(karyoploteR)
 library(circlize)
 
-options(shiny.host = "0.0.0.0")
-options(shiny.port = 8180)
 options(shiny.maxRequestSize = 50 * 1024^2)
 
 # classe panell KaryoPlot
@@ -43,6 +40,7 @@ ui <- dashboardPage(
   dashboardHeader(title = "VHIO's VISUAL OMICS (VVO)", titleWidth = 240),
   
   dashboardSidebar(
+    useShinyjs(),
     width = 240,
     sidebarMenu(
       id = "tabs",
@@ -52,10 +50,22 @@ ui <- dashboardPage(
     ),
     tags$hr(style = "border-top: 2px solid white; margin-top:4px; margin-bottom:4px;"),
     
-    #uiOutput("Dades_input"), #select data source --> no cal perque només hi ha un
+    # Icona d'ajuda per a les dades requerides
+    div(
+      style = "display: flex; align-items: center; gap: 8px; margin-bottom: 10px;",
+      tags$label("Input data:", style = "font-weight: bold; flex: 1; margin: 0;"),
+      actionLink("help_required", icon("circle-question"), title = "Go to Help", style = "color: #0066cc;")
+    ),
+    
     fileInput("dde_file", "Upload .rds data:(DeeDeeExperiment)", accept = ".rds"),
     
-    #uiOutput("Entrada_dades"), #carregar fitxer
+    # Icona d'ajuda per als controls del sidebar
+    div(
+      style = "display: flex; align-items: center; gap: 8px; margin-top: 15px; margin-bottom: 10px;",
+      tags$label("Parameters:", style = "font-weight: bold; flex: 1; margin: 0;"),
+      actionLink("help_controls", icon("circle-question"), title = "Go to Help", style = "color: #0066cc;")
+    ),
+    
     uiOutput("contrast"),
     uiOutput("cluster_var"), #cluster by
     uiOutput("num_genes"), #quantitat de gens
@@ -83,86 +93,122 @@ ui <- dashboardPage(
     tabItems(
       tabItem(tabName = "basic_tab", uiOutput("isee_ui")),
       tabItem(tabName = "df_tab", uiOutput("isee_ui2")),
-      tabItem(tabName = "help_tab",    
+      tabItem(tabName = "help_tab",
               HTML('
-          <h3 style="color:#2c3e50;">User Guide</h3>
-          <hr>
+    <h3 style="color:#2c3e50;">User Guide - VHIO Visual Omics (VVO)</h3>
+    <p style="color:#555;">VVO lets you explore bulk RNA-seq data through two linked modules: <b>Basic Exploration</b> (QC and clustering) and <b>DEA and FEA results</b> (differential expression and functional enrichment), built on <a href="https://bioconductor.org/packages/iSEE" target="_blank">iSEE</a>.</p>
+    <hr>
 
-          <h4 style="color:#2c3e50;">1. Data Upload</h4>
-          <div style="background-color: #f9f9f9; padding:10px;">
-            <ul>
-              <li>Select the data type: <b>Bulk RNA-seq (.RDS)</b> or <b>Single-cell RNA-seq (.RDS)</b>.</li>
-              <li>Upload a valid <code>.RDS</code> file containing a <code>SummarizedExperiment</code> or <code>SingleCellExperiment</code> object.</li>
-              <li>Other formats will cause errors.</li>
-            </ul>
-          </div>
+    <h4 id="section-required" style="color:#2c3e50;">1. Required data format</h4>
+    <div style="background-color:#f9f9f9; padding:10px;">
+      <ul>
+        <li>Upload a single <code>.RDS</code> file containing a <b><code>DeeDeeExperiment</code></b> object (extends <code>SummarizedExperiment</code>/<code>SingleCellExperiment</code>, storing DEA results in <code>@dea</code> and enrichment results in <code>@fea</code>).</li>
+        <li>The object must have a <code>Cond</code> column in <code>colData</code>, identifying each sample\'s experimental group.</li>
+        <li>The <code>assays</code> slot must include raw <code>counts</code>. VVO filters low-expression genes, normalizes with TMM, and computes a PCA automatically.</li>
+        <li>Contrasts shown in the sidebar come from the names of <code>@dea</code>. For each contrast, VVO reads <code>&lt;contrast&gt;_padj</code> and <code>&lt;contrast&gt;_log2FoldChange</code> columns in <code>rowData</code>.</li>
+        <li>If <code>@fea</code> has GSEA results for a contrast, the FEA plots will show them.</li>
+      </ul>
+    </div>
 
-          <h4 style="color:#2c3e50;">2. Clustering Options</h4>
-          <div style="background-color: #f9f9f9; padding:10px;">
-            <ul>
-              <li><b>Clustering by:</b> Select a column from <code>colData</code> to group samples or cells.</li>
-              <li>Color schemes are automatically assigned to unique levels of the selected variable.</li>
-              <li>Dendrograms are generated using correlation or Euclidean distance (configurable internally).</li>
-            </ul>
-          </div>
+    <h4 id="section-genomic" style="color:#2c3e50;">2. With or without genomic position (rowRanges)</h4>
+    <div style="background-color:#f9f9f9; padding:10px;">
+      <ul>
+        <li>VVO checks automatically whether the object has valid genomic coordinates (<code>rowRanges</code>) for each gene.</li>
+        <li><b>With genomic position:</b> three extra panels appear on the DEA/FEA tab - <b>KaryoPlot</b> (whole genome), <b>KaryoPlot (zoom)</b> (one chromosome, chosen in the sidebar), and <b>CircosPlot</b> (circular view, up to two contrasts compared at once).</li>
+        <li><b>Without genomic position:</b> those three panels are hidden, everything else works the same. No action needed from you.</li>
+        <li>If you expect the genomic panels and don\'t see them, check that <code>rowRanges()</code> is not empty and has valid <code>start</code>/<code>end</code> values.</li>
+      </ul>
+    </div>
 
-          <h4 style="color:#2c3e50;">3. Parameter Configuration</h4>
-          <div style="background-color: #f9f9f9; padding:10px;">
-            <ul>
-              <li><b>Number of genes:</b> Choose between 2 and 2000 genes to display in heatmaps.</li>
-              <li><b>Samples / Cells:</b> Filter which samples (bulk) or clusters (single-cell) to include in the analysis.</li>
-              <li><b>Genes to visualize:</b> Optionally select specific genes to focus the plots.</li>
-            </ul>
-          </div>
+    <h4 id="section-controls" style="color:#2c3e50;">3. Sidebar controls</h4>
+    <div style="background-color:#f9f9f9; padding:10px;">
+      <ul>
+        <li><b>Upload .rds data:</b> your <code>DeeDeeExperiment</code> file.</li>
+        <li><b>Select Contrast for DEA</b> (DEA/FEA tab): pick one or more contrasts. 2-4 contrasts enable the Venn diagram; the first one drives the volcano plot, FEA plots and gene tables.</li>
+        <li><b>Clustering by:</b> <code>colData</code> column used to color samples and group the dendrogram.</li>
+        <li><b>Number of genes to display</b> (Basic Exploration only): how many top variable genes feed the heatmap and gene selector.</li>
+        <li><b>Select samples:</b> which samples to include. On DEA/FEA, pre-filtered to the selected contrast(s).</li>
+        <li><b>Select genes:</b> restrict plots to specific genes.</li>
+        <li><b>P adjusted Value / Log2 Fold Change thresholds</b> (DEA/FEA tab): significance cutoffs used everywhere (volcano, Venn, karyotype/circos).</li>
+        <li><b>Zoom to chromosome</b> (only if genomic position available): chromosome shown in the zoomed KaryoPlot.</li>
+      </ul>
+    </div>
 
-          <h4 style="color:#2c3e50;">4. iSEE Panels Overview</h4>
-          <div style="background-color: #f9f9f9; padding:10px;">
-            <ul>
-              <li><b>QCPlot:</b> Displays library size (million reads) per sample or cluster. Colors indicate cluster membership.</li>
-              <li><b>ReducedDimensionPlot:</b> PCA of samples/cells. Color points by the selected cluster variable.</li>
-              <li><b>ComplexHeatmapPlot:</b> Heatmap of top variable genes or selected genes. Rows clustered and scaled by default. Column selection linked to PCA plot.</li>
-              <li><b>SampleAssayPlot:</b> Allows visualization of counts for individual genes or samples.</li>
-              <li>Selections in one panel propagate to others if dynamic selection is enabled (ColumnSelectionDynamicSource = TRUE).</li>
-            </ul>
-          </div>
+    <h4 id="section-interaction" style="color:#2c3e50;">4. How panels react to each other</h4>
+    <div style="background-color:#f9f9f9; padding:10px;">
+      <p>Panels are linked: selecting something in one panel (a point, a row, a sample) updates other panels automatically. In Basic Exploration:</p>
+      <ul>
+        <li>Selecting points in the <b>PCA</b> plot updates <b>Library Size</b>, <b>Dendrograma</b> and the <b>Heatmap</b> to show only those samples.</li>
+      </ul>
+      <p>In DEA and FEA results:</p>
+      <ul>
+        <li>Clicking a gene (row) in the <b>RowDataTable</b> highlights that gene in red on the <b>KaryoPlot</b> / <b>KaryoPlot (zoom)</b> (only with genomic position).</li>
+        <li>Filtering for Upregulated or Downregulated genes in the <b>RowDataTable</b> highlights that genes on the <b>VolcanoPlot</b>.</li>
+        <li>Selecting samples in the <b>ColumnDataTable</b> updates the <b>Heatmap</b> to show only those samples.</li>
+        <li>The <b>CircosPlot</b> does not react to row/column selections — it always shows the DEGs of the two contrasts assigned to it (<code>Contrast1</code>/<code>Contrast2</code>), based on the padj/logFC thresholds.</li>
+      </ul>
+      <p style="color:#888;">Tip: to see a specific gene highlighted on the genome, search or click it in the RowDataTable first.</p>
+    </div>
 
-          <h4 style="color:#2c3e50;">5. Advanced Options & Customization</h4>
-          <div style="background-color: #f9f9f9; padding:10px;">
-            <ul>
-              <li>Adjust visual parameters via panel boxes: color, size, text labels, contour overlays, violin plots, etc.</li>
-              <li>Downsampling is available for large datasets.</li>
-              <li>Panel dimensions and aspect ratios can be modified to improve visualization.</li>
-            </ul>
-          </div>
+    <h4 style="color:#2c3e50;">5. Basic Exploration tab</h4>
+    <div style="background-color:#f9f9f9; padding:10px;">
+      <ul>
+        <li><b>Library Size:</b> total reads (millions) per sample, colored by group. Quick QC check.</li>
+        <li><b>Dendrograma:</b> hierarchical clustering of samples (Euclidean distance, Ward.D2), colored by group.</li>
+        <li><b>PCA:</b> principal component plot of samples, colored by group.</li>
+        <li><b>Heatmap:</b> expression of the selected genes, scaled by row, samples annotated by group.</li>
+        <li><b>SampleAssayPlot:</b> expression values per sample for individual genes.</li>
+      </ul>
+      <p style="color:#888;">At least 2 samples are required.</p>
+    </div>
 
-          <h4 style="color:#2c3e50;">6. Exporting & Saving Plots</h4>
-          <div style="background-color: #f9f9f9; padding:10px;">
-            <ul>
-              <li>Plots can be downloaded directly from the iSEE interface using the download buttons.</li>
-              <li>Changing analysis type or cluster variable will reset iSEE panels to reflect the new selection.</li>
-            </ul>
-          </div>
-
-          <h4 style="color:#2c3e50;">7. Additional information</h4>
-          <div style="background-color: #d5d2d4; padding:10px;">
-            <ul>
-              <li>If plots do not appear, verify that the RDS file contains the expected object type.</li>
-              <li>For bulk RNA-seq, PCA will be computed automatically if missing.</li>
-              <li>For large single-cell datasets, selecting too many genes or cells may slow down the app.</li>
-              <li>Always select at least 2 samples/cells for clustering and heatmaps.</li>
-              <li>If you have any questions or issues, please contact the Bioinformatics Unit directly.</li>
-            </ul>
-          </div>
-        ')
+    <h4 style="color:#2c3e50;">6. DEA and FEA results tab</h4>
+    <div style="background-color:#f9f9f9; padding:10px;">
+      <ul>
+        <li><b>Volcano Plot:</b> logFC vs. p-value for the first selected contrast, colored by significance.</li>
+        <li><b>RowDataTable:</b> gene-level table with annotation and DEA stats.</li>
+        <li><b>ColumnDataTable:</b> sample metadata table.</li>
+        <li><b>Heatmap:</b> expression of the DEGs (or selected genes), annotated by group.</li>
+        <li><b>Venn Diagram:</b> overlap of significant genes across 2–4 selected contrasts.</li>
+        <li><b>FEA Dot Plot / Bar Plot:</b> top significant Hallmark pathways (GSEA) for the first contrast, by NES and padj.</li>
+        <li><b>KaryoPlot / KaryoPlot (zoom) / CircosPlot</b> — only if genomic position is available: show where the DEGs are located on the genome.</li>
+      </ul>
+      <p style="color:#888;">At least 2 samples and a contrast with significant genes are required.</p>
+    </div>
+    
+      </ul>
+    </div>
+  ')
       )
     )
   )
 )
 
+# detectar genoma
+get_genome <- function(dde) {
+  n_chrs <- length(unique(as.character(seqnames(rowRanges(dde)))))
+  if(n_chrs < 23) "mm10" else "hg38"
+}
+
 # --------------- SERVER ---------------------
 
 server <- function(input, output, session) {
   
+  # Icones d'ajuda navegació a la secció corresponent del Help tab
+  observeEvent(input$help_required, {
+    updateTabItems(session, "tabs", selected = "help_tab")
+    shinyjs::delay(300, shinyjs::runjs("document.getElementById('section-required').scrollIntoView({behavior: 'smooth'});"))
+  })
+  
+  observeEvent(input$help_controls, {
+    updateTabItems(session, "tabs", selected = "help_tab")
+    shinyjs::delay(300, shinyjs::runjs("document.getElementById('section-controls').scrollIntoView({behavior: 'smooth'});"))
+  })
+  
+  observeEvent(input$help_interaction, {
+    updateTabItems(session, "tabs", selected = "help_tab")
+    shinyjs::delay(300, shinyjs::runjs("document.getElementById('section-interaction').scrollIntoView({behavior: 'smooth'});"))
+  })
   
   # Valor reactiu per guardar el cromosoma seleccionat.
   chr_sel_reactive <- reactiveVal("chr1") 
@@ -202,7 +248,7 @@ server <- function(input, output, session) {
     
     #FILTRATGE
     counts <- assay(obj, "counts")
-    keep <- filterByExpr(counts, group = colData(obj)[["Cond"]]) #Mira quins gens tenen prou expressió per ser estadísticament útils segons la teva columna de condicions ("Cond")
+    keep <- filterByExpr(counts, group = colData(obj)[["Cond"]]) 
     obj <- obj[keep, ]#ens quedem amb les files (gens) que han passat el filtre i eliminem la resta
     countsF <- assay(obj, "counts")
     
@@ -216,7 +262,8 @@ server <- function(input, output, session) {
     pca_scores_makePCA <- sweep(pca$x, 2,pca$sdev * sqrt(n), FUN = "/")
     
     #guardem pca a obj perque isee la trobi
-    reducedDims(obj)$PCA <- pca_scores_makePCA[, 1:2]
+    n_pcs <- min(4, ncol(pca_scores_makePCA))
+    reducedDims(obj)$PCA <- pca_scores_makePCA[, 1:n_pcs] 
     
     return(obj)
   })
@@ -243,9 +290,10 @@ server <- function(input, output, session) {
     dde <- dde2()
     if (input$tabs %in% c("basic_tab","df_tab")) {
       cols_fil <- colnames(colData(dde))
+      default_sel <- if ("Cond" %in% cols_fil) "Cond" else cols_fil[1]
       selectizeInput("cluster_var","Clustering by:",
                      choices = cols_fil,
-                     selected = cols_fil[1])
+                     selected = default_sel)
     }
   })
   
@@ -255,7 +303,7 @@ server <- function(input, output, session) {
     if (input$tabs == "basic_tab") {
       numericInput(
         "num_genes",
-        "Number of genes to display (min 2 - max 2000):",
+        "Number of genes to display (min 2 - max 50):",
         50,
         min =2, max = 2000
       )
@@ -335,7 +383,7 @@ server <- function(input, output, session) {
   output$chr_selector <- renderUI({
     req(dde2(), input$tabs == "df_tab", te_rowRanges())
     
-    cromosomes <- paste0("chr", c(1:22, "X", "Y"))
+    cromosomes <- if(genome_sp()=="mm10") paste0("chr",c(1:19,"X","Y")) else paste0("chr",c(1:22,"X","Y"))
     
     selectizeInput(
       inputId = "chr_sel",
@@ -347,6 +395,12 @@ server <- function(input, output, session) {
   })
   
   #3. REACTIUS COMPARTITS________________________________________________________________________________________________________
+  
+  # Detecció de tipus de genoma (humà o ratolí)
+  genome_sp <- reactive({
+    req(dde2())
+    get_genome(dde2())
+  })
   
   # Colors i nivells
   color_palette <- reactive({
@@ -450,7 +504,7 @@ server <- function(input, output, session) {
     all_counts <- assay(isolate(dde2()), "counts")[, samples_actuals, drop = FALSE]
     sample.totals <- colSums(all_counts)
     
-    cluster_raw <- as.character(colData(dde)[[input$cluster_var]])
+    cluster_raw <- as.character(colData(selected_obj)[[input$cluster_var]])
     cluster_levels <- unique(cluster_raw)
     
     if (all(!is.na(suppressWarnings(as.numeric(cluster_levels))))) {
@@ -488,29 +542,25 @@ server <- function(input, output, session) {
     mida_text <- if(num_grups > 40) 5 else if(num_grups > 20) 7 else 9
     mida_eix_x <- if(m_sel > 50) 5 else if(m_sel > 30) 7 else 9
     grid_x <- if(remove_grid) element_blank() else element_line()
+    num_grups <- length(unique(sample.totals.df$cluster))
+    mostra_llegenda <- num_grups <= 20   # NUEVO: umbral a partir del cual se oculta
+    
     p <- ggplot(data=sample.totals.df, aes(x=sample, y=total)) + 
-      geom_bar(aes(fill = total), stat = "identity") + #fill= total
+      geom_bar(aes(fill = total), stat = "identity") +
       geom_point(aes(colour = cluster), y = -Inf, alpha = 0) +
       scale_colour_manual(values = color_palette, name = input$cluster_var) +
       guides(
-        colour = guide_legend(
-          override.aes = list(
-            shape = 15,
-            size = mida_quadrat, #5
-            alpha = 1
-          )
-        )
+        colour = if (mostra_llegenda) {
+          guide_legend(override.aes = list(shape = 15, size = mida_quadrat, alpha = 1))
+        } else {
+          "none"     # oculta llegenda si hi ha massa grups
+        }
       ) +
       theme_bw() +
       theme(
         panel.grid.major.x = grid_x,
         panel.grid.minor.x = grid_x,
-        axis.text.x = element_text(
-          angle = 90,
-          vjust = 0.5,
-          hjust=1,
-          colour = label_colors,
-          size = mida_eix_x),
+        axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1, colour = label_colors, size = mida_eix_x),
         legend.text = element_text(size = mida_text),
         legend.title = element_text(size = mida_titol)
       ) +
@@ -546,6 +596,7 @@ server <- function(input, output, session) {
     }
     
     mida_labels <- if(n_mostres > 50) 0.4 else if(n_mostres > 20) 0.6 else 0.8
+    mida_llegenda <- 0.8
     
     parameters <- setParameters(labels)
     use.cor <- "pairwise.complete.obs"
@@ -572,10 +623,16 @@ server <- function(input, output, session) {
       xlab <- paste("Distance: Euclidean / Linkage:", method, sep = "-") #abans: Euclidean
     }
     
+    if (is.null(conditions) || length(conditions) == 0) {
+      conditions <- rep("Group1", ncol(estimates))
+    }
+    
     cond_levels <- ordered_levels(conditions)
     conditions <- factor(conditions, levels = cond_levels)
     # conditions <- as.character(conditions)
     # cond_levels <- sort(unique(conditions))
+    
+    mostra_llegenda <- length(cond_levels) <= 20 
     
     #paleta de colors estàndard (de ggplot2) si no passen una específica
     gg_color_hue <- function(n) { #abans: gg_default_palette
@@ -589,20 +646,23 @@ server <- function(input, output, session) {
     sample_colors <- color_map[conditions]
     #colors <- color_palette[conditions]
     
-    layout(matrix(c(1, 2), nrow = 1), widths = c(4, 1))       # Capa gràfic amb llegenda lateral
-    #Dendograma
-    par(mar = c(7, 4, 4, 1)) #5                                   # Capa dendrograma
-    clust_col <- colorCluster(clust, sample_colors,ce = mida_labels) #0.8
+    if (mostra_llegenda) {
+      layout(matrix(c(1, 2), nrow = 1), widths = c(4, 1))
+    } else {
+      layout(matrix(1, nrow = 1))   # si no mostra llegenda surt el plot a tot el panell
+    }
+    
+    par(mar = c(7, 4, 4, 1))
+    clust_col <- colorCluster(clust, sample_colors, ce = mida_labels)
     plot(clust_col, main = title, xlab = xlab, sub = "")
-    # Capa leyenda
-    par(mar = c(7, 0, 4, 1)) #5
-    plot.new()
-    legend("center", #llegenda automàticament centrada sempre
-           legend = cond_levels,
-           fill = color_map, #alinea text i quadrat
-           title = "Groups",
-           cex = mida_labels, #0.8
-           bty = "n") #traiem la caixa negra del voltant de la llegenda
+    
+    if (mostra_llegenda) {
+      par(mar = c(7, 0, 4, 1))
+      plot.new()
+      legend("center",
+             legend = cond_levels, fill = color_map, title = "Groups",
+             cex = mida_llegenda, bty = "n")
+    }
     
     layout(1)
     return(recordPlot())
@@ -610,6 +670,10 @@ server <- function(input, output, session) {
   
   # Función dendrograma
   dendro_fun <- function(dde, cluster_by, genes_use, rows = NULL, columns = NULL) {
+    
+    if (is.null(cluster_by) || !(cluster_by %in% colnames(colData(dde)))) {
+      cluster_by <- colnames(colData(dde))[1]  # fallback a la primera columna
+    }
     
     dde <- dde[genes_use, , drop = FALSE]
     
@@ -699,7 +763,7 @@ server <- function(input, output, session) {
       
       restrict = NULL,
       className = "DendroPlot1",
-      fullName = "Dendrograma"
+      fullName = "Dendrogram"
     )(
       PanelHeight = 400L,
       PanelWidth = 6L,
@@ -797,16 +861,12 @@ server <- function(input, output, session) {
                                                 SelectionHistory = list())
     
     #Output final de l'iSEE
-    output$isee_ui <- renderUI({
-      req(dde_filtrat())
-      dde_display <- isolate(dde_filtrat()) #aïllem la versió actual de l'objecte filtrat
-      
-      iSEE(
-        dde_display,
-        initial = initial_panels,
-        appTitle = "Basic exploration of the data"
-      )
-    })
+    iSEE(
+      dde_display,
+      initial = initial_panels,
+      appTitle = "Basic exploration of the data"
+    )
+    
   }) #output$isee_ui
   
   #5. REACTIUS DEA/FEA TAB _____________________________________________________________________________________________________________
@@ -962,11 +1022,11 @@ server <- function(input, output, session) {
                   pp$ideogramheight <- 25
                   pp$leftmargin     <- 0.15
                   kp <- karyoploteR::plotKaryotype(
-                    genome = "hg38", chromosomes = chr_sel,
+                    genome = genome_sp(), chromosomes = chr_sel,
                     plot.type = 1, plot.params = pp
                   )
                 } else {
-                  kp <- karyoploteR::plotKaryotype(genome = "hg38", plot.type = 1)
+                  kp <- karyoploteR::plotKaryotype(genome = genome_sp(), plot.type = 1)
                 }
                 
                 # Dividim l'eix Y en bandes iguals: 1 per grisos + 1 per cada contrast
@@ -1005,13 +1065,27 @@ server <- function(input, output, session) {
                                           border = col_i,
                                           lwd    = 1)
                     }
-                    legend_labels <- c(legend_labels, paste0(con, "  (n=", length(sig), ")"))
+                    legend_labels <- c(legend_labels, paste0(con, "\n(n=", length(sig), ")"))
                     legend_cols   <- c(legend_cols, col_i)
                   }
-                  legend("bottomright",
-                         legend = legend_labels, fill = legend_cols,
-                         title  = paste0("DEGs  padj<", pval_cut, "  |logFC|>", lfc_cut),
-                         bty    = "n", cex = 0.75, xpd = NA)
+                  
+                  legend_title <- paste0("DEGs padj<", pval_cut, "\n|logFC|>", lfc_cut)
+                  
+                  if (is_zoom) {
+                    legend(x      = "bottomright",
+                           inset  = c(0.02, 0),
+                           legend = legend_labels, fill = legend_cols,
+                           title  = legend_title,
+                           bty    = "n", cex = 0.65, xpd = NA,
+                           y.intersp = 1.8)
+                  } else {
+                    legend(x      = "right",
+                           inset  = c(0.02, 0),
+                           legend = legend_labels, fill = legend_cols,
+                           title  = legend_title,
+                           bty    = "n", cex = 0.65, xpd = NA,
+                           y.intersp = 1.8)
+                  }
                 }
                 
                 # Gen seleccionat a la taula → vermell per sobre de tot (igual que abans)
@@ -1086,7 +1160,7 @@ server <- function(input, output, session) {
                 # Inicialitzem el plot circos
                 circlize::circos.clear()
                 circlize::circos.par(start.degree = 90, gap.degree = 2)  # chr1 comença a dalt
-                circlize::circos.initializeWithIdeogram(species = "hg38", plotType = c("ideogram", "labels"))
+                circlize::circos.initializeWithIdeogram(species = genome_sp(), plotType = c("ideogram", "labels"))
                 
                 # Vectors per construir la llegenda al final
                 legend_labels <- c()
@@ -1119,9 +1193,10 @@ server <- function(input, output, session) {
                   bed_con <- bed_con[bed_con$chr %in% std_chrs & !is.na(bed_con$logfc), ]
                   if (nrow(bed_con) == 0) next
                   
-                  # Rang de l'eix Y: cobreix el logFC real + marge per veure el threshold
+                  # Rang de l'eix Y: cobreix el logFC real + marge flexible
                   lfc_range <- range(bed_con$logfc, na.rm = TRUE)
-                  lfc_ylim  <- c(min(lfc_range[1], -(lfc_cut + 0.5)), max(lfc_range[2], lfc_cut + 0.5))
+                  margin <- 0.5
+                  lfc_ylim <- c(lfc_range[1] - margin, lfc_range[2] + margin)
                   
                   # Capturem colors en variables locals per al closure de panel.fun
                   # (evita que el loop sobreescrigui el valor capturat)
@@ -1260,6 +1335,12 @@ server <- function(input, output, session) {
     selected_cluster_var <- input$cluster_var
     if (is.null(selected_cluster_var) || selected_cluster_var == "") {
       selected_cluster_var <- colnames(colData(dde3))[1]
+    }
+    
+    # forçam a factor per a que no surti la llegenda continua
+    colData(dde3)[[selected_cluster_var]] <- as.factor(colData(dde3)[[selected_cluster_var]])
+    if ("Cond" %in% colnames(colData(dde3))) {
+      colData(dde3)$Cond <- as.factor(colData(dde3)$Cond)
     }
     
     gens_actuals <- deg_from_dea()
